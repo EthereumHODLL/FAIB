@@ -1015,53 +1015,123 @@ def inject_custom_styles():
 def tab_executive_dashboard(models: Dict[str, Any], policy: Dict[str, Any]):
     st.subheader("📊 Executive Underwriting Overview")
     
-    # Portfolio Test Stats
+    # 1. Retrieve Historical Test Baseline
     y_test = models["y_test"]
     X_test = models["X_test"]
     rf = models["rf"]
-    probs = rf.predict_proba(X_test)[:, 1]
+    hist_probs = rf.predict_proba(X_test)[:, 1]
     
     P = policy["params"]
-    auto_approves = (probs > P["auto_approve_prob"]).sum()
-    auto_rejects = (probs < P["auto_reject_prob"]).sum()
-    escalates = len(probs) - auto_approves - auto_rejects
-    default_rate = (1 - y_test).mean()
+    hist_auto_approves = int((hist_probs > P["auto_approve_prob"]).sum())
+    hist_auto_rejects = int((hist_probs < P["auto_reject_prob"]).sum())
+    hist_escalates = len(hist_probs) - hist_auto_approves - hist_auto_rejects
+    hist_default_rate = float((1 - y_test).mean())
 
+    # 2. Retrieve Live Session Applications
+    session_apps = st.session_state.get("app_history", [])
+    
+    live_auto_approves = sum(1 for a in session_apps if a.get("human_decision") == "HUMAN_APPROVED" or (a["route"] == "AUTO_APPROVE" and a.get("human_decision") != "HUMAN_REJECTED"))
+    live_auto_rejects = sum(1 for a in session_apps if a.get("human_decision") == "HUMAN_REJECTED" or (a["route"] == "AUTO_REJECT" and a.get("human_decision") != "HUMAN_APPROVED"))
+    live_escalates = sum(1 for a in session_apps if a["route"] == "ESCALATE" and a.get("human_decision", "PENDING") == "PENDING")
+    live_probs = [a["p_approve"] for a in session_apps]
+
+    # 3. Interactive Scope Selector
+    header_c1, header_c2 = st.columns([2, 1])
+    with header_c1:
+        view_scope = st.radio(
+            "Dashboard Metrics Scope:",
+            ["🌐 Unified Portfolio (Benchmark + Live)", "⚡ Live Session Applications", "📁 Benchmark Test Split (854)"],
+            horizontal=True,
+            key="dash_scope_radio"
+        )
+    with header_c2:
+        if session_apps:
+            st.markdown(f"<div style='text-align: right; padding-top: 15px;'><span style='background-color: #ecfdf5; color: #065f46; border: 1px solid #10b981; padding: 4px 10px; border-radius: 9999px; font-size: 0.82rem; font-weight: 600;'>🟢 Live Active: {len(session_apps)} New Processed</span></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='text-align: right; padding-top: 15px;'><span style='color: #64748b; font-size: 0.82rem;'>⚡ No live applications yet</span></div>", unsafe_allow_html=True)
+
+    # 4. Compute Dynamic Metrics according to selected scope
+    if view_scope == "⚡ Live Session Applications":
+        if not session_apps:
+            st.info("ℹ️ No live applications have been evaluated in this session yet. Go to **New Application** tab to submit or test borrower profiles!")
+            tot_count = 0
+            auto_approves = 0
+            auto_rejects = 0
+            escalates = 0
+            app_rate = 0.0
+            esc_rate = 0.0
+            default_rate = 0.0
+            current_probs = np.array([])
+            sub_label = "Live Session (0 submitted)"
+        else:
+            tot_count = len(session_apps)
+            auto_approves = live_auto_approves
+            auto_rejects = live_auto_rejects
+            escalates = live_escalates
+            app_rate = auto_approves / tot_count if tot_count > 0 else 0.0
+            esc_rate = escalates / tot_count if tot_count > 0 else 0.0
+            default_rate = auto_rejects / tot_count if tot_count > 0 else 0.0
+            current_probs = np.array(live_probs)
+            sub_label = f"Live Session ({tot_count} submitted)"
+    elif view_scope == "📁 Benchmark Test Split (854)":
+        tot_count = len(hist_probs)
+        auto_approves = hist_auto_approves
+        auto_rejects = hist_auto_rejects
+        escalates = hist_escalates
+        app_rate = auto_approves / tot_count
+        esc_rate = escalates / tot_count
+        default_rate = hist_default_rate
+        current_probs = hist_probs
+        sub_label = "80/20 Stratified Split"
+    else:  # Unified Portfolio (Default)
+        tot_count = len(hist_probs) + len(session_apps)
+        auto_approves = hist_auto_approves + live_auto_approves
+        auto_rejects = hist_auto_rejects + live_auto_rejects
+        escalates = hist_escalates + live_escalates
+        app_rate = auto_approves / tot_count
+        esc_rate = escalates / tot_count
+        default_rate = (hist_auto_rejects + live_auto_rejects) / tot_count
+        current_probs = np.concatenate([hist_probs, np.array(live_probs)]) if live_probs else hist_probs
+        sub_label = f"854 Baseline + {len(session_apps)} Live" if session_apps else "854 Baseline Split"
+
+    # 5. Render Metric Cards
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-label">Test Split Applications</div>
-            <div class="kpi-val">{len(probs):,}</div>
-            <div class="kpi-sub">80/20 Stratified Split</div>
+            <div class="kpi-label">Total Applications</div>
+            <div class="kpi-val">{tot_count:,}</div>
+            <div class="kpi-sub">{sub_label}</div>
         </div>
         """, unsafe_allow_html=True)
     with c2:
         st.markdown(f"""
         <div class="kpi-card">
             <div class="kpi-label">Auto-Approval Rate</div>
-            <div class="kpi-val" style="color: #065f46;">{auto_approves / len(probs):.1%}</div>
-            <div class="kpi-sub">Probability > {P['auto_approve_prob']:.0%}</div>
+            <div class="kpi-val" style="color: #065f46;">{app_rate:.1%}</div>
+            <div class="kpi-sub">{auto_approves:,} Approved</div>
         </div>
         """, unsafe_allow_html=True)
     with c3:
         st.markdown(f"""
         <div class="kpi-card">
             <div class="kpi-label">Underwriter Escalation</div>
-            <div class="kpi-val" style="color: #b26a00;">{escalates / len(probs):.1%}</div>
-            <div class="kpi-sub">Human Review Band</div>
+            <div class="kpi-val" style="color: #b26a00;">{esc_rate:.1%}</div>
+            <div class="kpi-sub">{escalates:,} Awaiting Review</div>
         </div>
         """, unsafe_allow_html=True)
     with c4:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-label">Historical Default Rate</div>
+            <div class="kpi-label">Default / Reject Rate</div>
             <div class="kpi-val" style="color: #991b1b;">{default_rate:.1%}</div>
-            <div class="kpi-sub">Rejected / Bad Loans</div>
+            <div class="kpi-sub">{auto_rejects:,} Rejected</div>
         </div>
         """, unsafe_allow_html=True)
 
     st.write("")
+
+    # 6. Render Dynamic Charts
     col_left, col_right = st.columns(2)
 
     with col_left:
@@ -1070,7 +1140,7 @@ def tab_executive_dashboard(models: Dict[str, Any], policy: Dict[str, Any]):
             "Routing Decision": ["Auto-Approved (>85%)", "Underwriter Review (20-85%)", "Auto-Rejected (<20%)"],
             "Count": [auto_approves, escalates, auto_rejects]
         })
-        if HAS_MPL:
+        if HAS_MPL and tot_count > 0:
             fig, ax = plt.subplots(figsize=(5, 3.5), dpi=100)
             colors = ["#10b981", "#f59e0b", "#ef4444"]
             wedges, texts, autotexts = ax.pie(
@@ -1089,9 +1159,9 @@ def tab_executive_dashboard(models: Dict[str, Any], policy: Dict[str, Any]):
 
     with col_right:
         st.markdown("##### 📈 Risk Score Distribution Histogram")
-        if HAS_MPL:
+        if HAS_MPL and len(current_probs) > 0:
             fig, ax = plt.subplots(figsize=(5, 3.5), dpi=100)
-            n, bins, patches = ax.hist(probs, bins=25, edgecolor="white", alpha=0.85)
+            n, bins, patches = ax.hist(current_probs, bins=20, edgecolor="white", alpha=0.85)
             for b_idx, patch in enumerate(patches):
                 center = 0.5 * (bins[b_idx] + bins[b_idx + 1])
                 if center > P["auto_approve_prob"]:
@@ -1104,21 +1174,55 @@ def tab_executive_dashboard(models: Dict[str, Any], policy: Dict[str, Any]):
             ax.axvline(P["auto_approve_prob"], color="#10b981", linestyle="--", linewidth=1.5, label="Auto-Approve (0.85)")
             ax.set_xlabel("Predicted Approval Probability", fontsize=9)
             ax.set_ylabel("Number of Applications", fontsize=9)
-            ax.set_title("Portfolio Risk Distribution", fontsize=11, fontweight="bold", pad=10)
+            ax.set_title("Risk Score Distribution", fontsize=11, fontweight="bold", pad=10)
             ax.legend(fontsize=8, loc="upper center")
             st.pyplot(fig)
             plt.close(fig)
-        else:
-            counts = pd.cut(probs, bins=10).value_counts().sort_index()
+        elif len(current_probs) > 0:
+            counts = pd.cut(current_probs, bins=10).value_counts().sort_index()
             hist_df = pd.DataFrame({
                 "Score Range": [f"{max(0.0, float(iv.left)):.2f} - {float(iv.right):.2f}" for iv in counts.index],
                 "Applications": counts.values
             }).set_index("Score Range")
             st.bar_chart(hist_df)
+        else:
+            st.caption("No probability data available for current selection.")
 
-    st.markdown("---")
-    st.markdown("##### 💡 Executive Underwriting Signals")
-    st.info(f"The automated decisioning engine successfully automates **{(auto_approves + auto_rejects) / len(probs):.1%}** of incoming retail applications with zero regulatory compliance violations. Senior Credit Officers handle **{escalates / len(probs):.1%}** of borderline and exceptional credit dossiers.")
+    # 7. Real-Time Live Application Feed Table
+    if session_apps:
+        st.markdown("---")
+        feed_col1, feed_col2 = st.columns([3, 1])
+        feed_col1.markdown(f"##### ⚡ Live Processed Applications Feed ({len(session_apps)} dossiers in session)")
+        with feed_col2:
+            if st.button("🗑️ Reset Session History", key="btn_reset_history"):
+                st.session_state["app_history"] = []
+                if "current_app" in st.session_state:
+                    del st.session_state["current_app"]
+                st.rerun()
+
+        feed_data = []
+        for a in reversed(session_apps):
+            inp = a["inputs"]
+            status_key = a.get("human_decision", a["route"])
+            badge = STATUS_LABEL.get(status_key, status_key)
+            feed_data.append({
+                "ID": a["id"],
+                "Applicant Name": a["name"],
+                "Income": inr(inp["income_annum"]),
+                "Loan Amount": inr(inp["loan_amount"]),
+                "Tenure": f"{inp['loan_term']}y",
+                "CIBIL": inp["cibil_score"],
+                "LTI": f"{a['ratios']['lti']:.2f}x",
+                "Coverage": f"{a['ratios']['coverage']:.2f}x",
+                "ML Score": f"{a['p_approve']:.1%}",
+                "Decision": badge,
+                "Underwriter Note": a.get("human_rationale", "—")[:40] + ("..." if len(a.get("human_rationale", "")) > 40 else ""),
+            })
+        st.dataframe(pd.DataFrame(feed_data), use_container_width=True)
+    else:
+        st.markdown("---")
+        st.info("💡 **Live Feed Notice:** When you submit new applications in **New Application** or take override actions in **Underwriter Desk**, this dashboard updates automatically in real time!")
+
 
 
 def tab_new_application(models: Dict[str, Any], policy: Dict[str, Any], client: Any):
