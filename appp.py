@@ -1109,7 +1109,11 @@ def tab_executive_dashboard(models: Dict[str, Any], policy: Dict[str, Any]):
             st.pyplot(fig)
             plt.close(fig)
         else:
-            hist_df = pd.DataFrame({"Score Bands": pd.cut(probs, bins=10).value_counts().sort_index()})
+            counts = pd.cut(probs, bins=10).value_counts().sort_index()
+            hist_df = pd.DataFrame({
+                "Score Range": [f"{max(0.0, float(iv.left)):.2f} - {float(iv.right):.2f}" for iv in counts.index],
+                "Applications": counts.values
+            }).set_index("Score Range")
             st.bar_chart(hist_df)
 
     st.markdown("---")
